@@ -14,6 +14,15 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 
+# Track all temporary directories so the EXIT trap can clean them all up.
+TMP_DIRS=()
+cleanup() {
+  for d in "${TMP_DIRS[@]:-}"; do
+    rm -rf "$d"
+  done
+}
+trap cleanup EXIT
+
 # Derive GitHub username from the authenticated gh session
 GH_USER=$(gh api user --jq '.login' 2>/dev/null || true)
 if [[ -z "$GH_USER" ]]; then
@@ -35,17 +44,21 @@ for notebook in "$SCRIPT_DIR"/*.ipynb; do
   echo "Processing: $filename -> repo: $repo_name"
 
   tmp_dir="$(mktemp -d)"
-  trap 'rm -rf "$tmp_dir"' EXIT
+  TMP_DIRS+=("$tmp_dir")
 
   # Initialise a local git repo
   git -C "$tmp_dir" init -q
   git -C "$tmp_dir" config user.name  "$(git config --global user.name  2>/dev/null || echo 'Notebook Bot')"
   git -C "$tmp_dir" config user.email "$(git config --global user.email 2>/dev/null || echo 'bot@example.com')"
 
-  # Copy the notebook (and the CSV dataset if present alongside it)
+  # Copy the notebook
   cp "$notebook" "$tmp_dir/"
-  if [[ -f "$SCRIPT_DIR/kc_house_data.csv" && "$filename" == *"house"* ]]; then
-    cp "$SCRIPT_DIR/kc_house_data.csv" "$tmp_dir/"
+
+  # Copy any CSV whose basename (without extension) matches the notebook basename
+  notebook_base="${filename%.ipynb}"
+  companion_csv="$SCRIPT_DIR/${notebook_base}.csv"
+  if [[ -f "$companion_csv" ]]; then
+    cp "$companion_csv" "$tmp_dir/"
   fi
 
   # Create a minimal README
@@ -73,9 +86,6 @@ EOF
     echo "  Created and pushed: https://github.com/$GH_USER/$repo_name"
   fi
 
-  # Reset trap so the next iteration can set a fresh one
-  trap - EXIT
-  rm -rf "$tmp_dir"
   echo ""
 done
 
